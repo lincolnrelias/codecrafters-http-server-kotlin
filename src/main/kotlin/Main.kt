@@ -16,12 +16,15 @@ fun main() {
         // ensures that we don't run into 'Address already in use' errors
         serverSocket.reuseAddress = true
         val splitResponse = input.readLine().split("/")
-        var response ="HTTP/1.1 200 OK\r\n"
-
+        var response ="HTTP/1.1 404 Not Found\r\n\r\n"
         if(splitResponse.size>3){
             if(splitResponse[1] == "echo"){
-                response+="Content-Type: text/plain\r\nContent-Length: ${splitResponse[2].length}\r\n\r\n${splitResponse[2].split(" ")[0]}"
+                response ="HTTP/1.1 200 OK\r\n"
+                val term = splitResponse[2].split(" ")[0]
+                response+="Content-Type: text/plain\r\nContent-Length: ${term.length}\r\n\r\n${term}"
             }
+        }else if(splitResponse[1]==" HTTP"){
+            response ="HTTP/1.1 200 OK\r\n\r\n"
         }
         output.println(response)
         input.close()
