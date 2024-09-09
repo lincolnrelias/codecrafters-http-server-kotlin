@@ -1,92 +1,120 @@
 import java.io.BufferedReader
 import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
-import java.net.ServerSocket;
-import java.io.PrintWriter;
+import java.net.ServerSocket
 import java.util.concurrent.Executors
 
 fun main(args: Array<String>) {
-
-    // Uncomment this block to pass the first stage
     val directoryPath = if (args.isNotEmpty() && args[0] == "--directory") args[1] else ""
-    val serverSocket = ServerSocket( 4221)
+    val serverSocket = ServerSocket(4221)
+    serverSocket.reuseAddress = true
     val threadPool = Executors.newFixedThreadPool(10)
+
     while (true) {
         val clientSocket = serverSocket.accept()
-        threadPool.submit{
+        threadPool.submit {
             try {
                 val input = BufferedReader(InputStreamReader(clientSocket.getInputStream()))
-                val output = PrintWriter(clientSocket.getOutputStream(), true)
-                // Since the tester restarts your program quite often, setting SO_REUSEADDR
-                // ensures that we don't run into 'Address already in use' errors
-                serverSocket.reuseAddress = true
-                val requestLine = input.readLine().split("/")
-                val headers = HashMap<String, String>()
+                val outputStream = clientSocket.getOutputStream()
 
-                // Read and store headers
-                var line: String?
-                while (input.readLine().also { line = it } != null && line!!.isNotEmpty()) {
-                    // Split the header into key and value (name: value)
-                    val headerParts = line!!.split(":", limit = 2)
-                    if (headerParts.size == 2) {
-                        val headerName = headerParts[0].trim().lowercase()
-                        val headerValue = headerParts[1].trim().lowercase()
-                        headers[headerName] = headerValue
+                // Read the full request and parse it
+                val rawRequest = buildString {
+                    var line: String?
+                    while (input.readLine().also { line = it } != null && line!!.isNotEmpty()) {
+                        append(line).append("\r\n")
+                    }
+                    // Check if there is a Content-Length header to read the body
+                    val contentLength = this.lines().firstOrNull { it.startsWith("content-Length", ignoreCase = true) }
+                        ?.split(":")?.get(1)?.trim()?.toIntOrNull()
+
+                    // If there's a body (POST/PUT requests), read the content based on Content-Length
+                    contentLength?.let {
+                        append("\r\n")
+                        val body = CharArray(it)
+                        input.read(body, 0, it)
+                        append(body)
                     }
                 }
-                var response = "HTTP/1.1 404 Not Found\r\n\r\n"
 
-                if (requestLine[1] == " HTTP") {
-                    response = "HTTP/1.1 200 OK\r\n\r\n"
-                } else if (requestLine.size >= 3) {
-                    when (requestLine[1].split(" ")[0]) {
-                        "echo" -> {
-                            response = "HTTP/1.1 200 OK\r\n"
-                            val term = requestLine[2].split(" ")[0]
-                            response += "Content-Type: text/plain\r\nContent-Length: ${term.length}\r\n\r\n${term}"
-                        }
+                val httpRequest = HttpRequest.parse(rawRequest)
+                val httpResponse = handleRequest(httpRequest, directoryPath)
+                httpResponse.sendResponse(outputStream)
 
-                        "user-agent" -> {
-                            response = "HTTP/1.1 200 OK\r\n"
-                            var uAgent = headers["user-agent"]
-                            response += "Content-Type: text/plain\r\nContent-Length: ${uAgent?.length}\r\n\r\n${uAgent}"
-
-                        }
-
-                        "files" -> {
-                            val file = File(directoryPath+"/"+requestLine[2].split(" ")[0])
-                            if(file.exists()){
-                                response = "HTTP/1.1 200 OK\r\n"
-                                val fileContent = file.readText(Charsets.UTF_8)
-                                response += "Content-Type: application/octet-stream\r\nContent-Length: ${fileContent.length}\r\n\r\n${fileContent}"
-                            }
-
-                        }
-                    }
-                }
-                output.println(response)
                 input.close()
-                output.close()
                 clientSocket.close()
-            }catch(_:Exception){}
-        }
-
-    }
-
-}
-fun listFolder(folderPath: String) {
-    val folder = File(folderPath)
-
-    if (folder.exists() && folder.isDirectory) {
-        // Recursively walk through all files and directories
-        folder.walk().forEach {
-            if (it.isDirectory) {
-                println("Directory: ${it.path}")
-            } else {
-                println("File: ${it.path}")
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
-    } else {
-        println("The specified path is not a valid directory.")
+    }
+}
+
+fun handleRequest(httpRequest: HttpRequest, directoryPath: String): HttpResponse {
+    return when {
+        httpRequest.path == "/" ->{
+            HttpResponse("200 OK")
+        }
+        // Handle echo endpoint
+        httpRequest.path.startsWith("/echo") -> {
+            val term = httpRequest.path.removePrefix("/echo/")
+            val response = HttpResponse("200 OK")
+            response.addHeader("content-Type", "text/plain")
+            response.addHeader("content-Length", term.length.toString())
+            response.body = term
+            response
+        }
+
+        // Handle user-agent endpoint
+        httpRequest.path.startsWith("/user-agent") -> {
+            val userAgent = httpRequest.headers["user-agent"] ?: "Unknown"
+            val response = HttpResponse("200 OK")
+            response.addHeader("content-Type", "text/plain")
+            response.addHeader("content-Length", userAgent.length.toString())
+            response.body = userAgent
+            response
+        }
+
+        // Handle files endpoint
+        httpRequest.path.startsWith("/files") -> {
+            val filename = httpRequest.path.removePrefix("/files/")
+            val file = File(directoryPath, filename)
+            if(httpRequest.method == "GET"){
+                if (file.exists() && file.isFile) {
+                    val fileContent = file.readText()
+                    val response = HttpResponse("200 OK")
+                    response.addHeader("content-Type", "application/octet-stream")
+                    response.addHeader("content-Length", fileContent.length.toString())
+                    response.body = fileContent
+                    response
+                } else {
+                    HttpResponse("404 Not Found")
+                }
+            }else{
+                try {
+                    if (!file.parentFile.exists()) {
+                        file.parentFile.mkdirs()
+                    }
+                    if (httpRequest.body != null) {
+                        file.writeText(httpRequest.body)
+                        val response = HttpResponse("201 Created")
+                        response.addHeader("content-Type", "application/octet-stream")
+                        response.addHeader("content-Length", httpRequest.body.length.toString())
+                        response.body = httpRequest.body
+                        return response
+                    }
+                } catch (e:SecurityException){
+                    e.printStackTrace()
+                }
+
+                HttpResponse("400 Bad Request")
+
+            }
+
+
+        }
+
+        // Default 404 response for unknown paths
+        else -> HttpResponse("404 Not Found")
     }
 }
