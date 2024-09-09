@@ -1,12 +1,14 @@
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.net.ServerSocket;
 import java.io.PrintWriter;
 import java.util.concurrent.Executors
 
-fun main() {
+fun main(args: Array<String>) {
 
     // Uncomment this block to pass the first stage
+    val directoryPath = if (args.isNotEmpty() && args[0] == "--directory") args[1] else ""
     val serverSocket = ServerSocket( 4221)
     val threadPool = Executors.newFixedThreadPool(10)
     while (true) {
@@ -50,6 +52,16 @@ fun main() {
                             response += "Content-Type: text/plain\r\nContent-Length: ${uAgent?.length}\r\n\r\n${uAgent}"
 
                         }
+
+                        "files" -> {
+                            val file = File(directoryPath+"/"+requestLine[2].split(" ")[0])
+                            if(file.exists()){
+                                response = "HTTP/1.1 200 OK\r\n"
+                                val fileContent = file.readText(Charsets.UTF_8)
+                                response += "Content-Type: application/octet-stream\r\nContent-Length: ${fileContent.length}\r\n\r\n${fileContent}"
+                            }
+
+                        }
                     }
                 }
                 output.println(response)
@@ -61,4 +73,20 @@ fun main() {
 
     }
 
+}
+fun listFolder(folderPath: String) {
+    val folder = File(folderPath)
+
+    if (folder.exists() && folder.isDirectory) {
+        // Recursively walk through all files and directories
+        folder.walk().forEach {
+            if (it.isDirectory) {
+                println("Directory: ${it.path}")
+            } else {
+                println("File: ${it.path}")
+            }
+        }
+    } else {
+        println("The specified path is not a valid directory.")
+    }
 }
